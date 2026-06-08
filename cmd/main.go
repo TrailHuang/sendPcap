@@ -15,9 +15,10 @@ import (
 )
 
 func main() {
-	// Parse common flags
+	// Register all flags on the default FlagSet
 	configPath := pflag.StringP("config", "c", "", "Config file path (YAML)")
 	quiet := pflag.BoolP("quiet", "q", false, "Quiet mode (no .osp suffix)")
+	config.RegisterFlags(pflag.CommandLine)
 	pflag.Parse()
 
 	args := pflag.Args()
@@ -39,8 +40,8 @@ func main() {
 		}
 	}
 
-	// Load and merge config
-	cfg, err := config.LoadConfig(*configPath)
+	// Load and merge config (YAML + CLI overrides)
+	cfg, err := config.LoadConfig(*configPath, pflag.CommandLine)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)

@@ -89,23 +89,8 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// LoadConfig loads config from YAML file and CLI flags, CLI overrides file
-func LoadConfig(configPath string) (*Config, error) {
-	cfg := &Config{}
-
-	// Load from YAML file if provided
-	if configPath != "" {
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read config file: %w", err)
-		}
-		if err := yaml.Unmarshal(data, cfg); err != nil {
-			return nil, fmt.Errorf("failed to parse config file: %w", err)
-		}
-	}
-
-	// Parse CLI flags (override YAML values)
-	fs := pflag.NewFlagSet("sendpcap", pflag.ContinueOnError)
+// RegisterFlags registers all modification flags on the given FlagSet
+func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("src-mac", "", "Source MAC address")
 	fs.String("dst-mac", "", "Destination MAC address")
 	fs.Int("vlan", 0, "VLAN ID")
@@ -123,10 +108,21 @@ func LoadConfig(configPath string) (*Config, error) {
 	fs.Int("dst-port-end", 0, "Destination port end")
 	fs.Int("ttl", 0, "TTL")
 	fs.Int("protocol", 0, "IP protocol number")
+}
 
-	// Only parse if there are args to parse
-	if len(os.Args) > 1 {
-		_ = fs.Parse(os.Args[1:])
+// LoadConfig loads config from YAML file and applies CLI overrides
+func LoadConfig(configPath string, fs *pflag.FlagSet) (*Config, error) {
+	cfg := &Config{}
+
+	// Load from YAML file if provided
+	if configPath != "" {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read config file: %w", err)
+		}
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse config file: %w", err)
+		}
 	}
 
 	// CLI overrides

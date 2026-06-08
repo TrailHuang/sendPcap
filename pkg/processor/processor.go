@@ -175,10 +175,13 @@ func copyFile(src, dst string) error {
 }
 
 func waitForFileGone(path string) {
-	for {
+	// Wait up to 1 second for the file to be consumed
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
+	// Timeout reached, file still exists - this is normal if no consumer is running
 }
