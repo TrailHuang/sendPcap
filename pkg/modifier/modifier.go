@@ -21,7 +21,7 @@ type PacketModifier struct {
 }
 
 // Modify applies the modification rules to a raw packet and returns the modified bytes
-func (m *PacketModifier) Modify(rawPacket []byte) ([]byte, error) {
+func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, error) {
 	packet := gopacket.NewPacket(rawPacket, layers.LayerTypeEthernet, gopacket.Default)
 
 	// Extract layers
@@ -29,6 +29,7 @@ func (m *PacketModifier) Modify(rawPacket []byte) ([]byte, error) {
 	var ip4Layer *layers.IPv4
 	var tcpLayer *layers.TCP
 	var udpLayer *layers.UDP
+	// dnsLayer is not used in serialization - gopacket's DNS serialization corrupts the data
 
 	if l := packet.Layer(layers.LayerTypeEthernet); l != nil {
 		ethLayer = l.(*layers.Ethernet)
@@ -57,11 +58,22 @@ func (m *PacketModifier) Modify(rawPacket []byte) ([]byte, error) {
 
 	// Modify IP layer
 	if ip4Layer != nil {
-		if m.SrcIP != nil {
-			ip4Layer.SrcIP = m.SrcIP.To4()
-		}
-		if m.DstIP != nil {
-			ip4Layer.DstIP = m.DstIP.To4()
+		if isDownstream {
+			// Downstream: swap src/dst modifications
+			if m.DstIP != nil {
+				ip4Layer.SrcIP = m.DstIP.To4()
+			}
+			if m.SrcIP != nil {
+				ip4Layer.DstIP = m.SrcIP.To4()
+			}
+		} else {
+			// Upstream: normal direction
+			if m.SrcIP != nil {
+				ip4Layer.SrcIP = m.SrcIP.To4()
+			}
+			if m.DstIP != nil {
+				ip4Layer.DstIP = m.DstIP.To4()
+			}
 		}
 		if m.TTL > 0 {
 			ip4Layer.TTL = uint8(m.TTL)
@@ -73,11 +85,22 @@ func (m *PacketModifier) Modify(rawPacket []byte) ([]byte, error) {
 
 	// Modify TCP ports
 	if tcpLayer != nil {
-		if m.SrcPort > 0 {
-			tcpLayer.SrcPort = layers.TCPPort(m.SrcPort)
-		}
-		if m.DstPort > 0 {
-			tcpLayer.DstPort = layers.TCPPort(m.DstPort)
+		if isDownstream {
+			// Downstream: swap src/dst port modifications
+			if m.DstPort > 0 {
+				tcpLayer.SrcPort = layers.TCPPort(m.DstPort)
+			}
+			if m.SrcPort > 0 {
+				tcpLayer.DstPort = layers.TCPPort(m.SrcPort)
+			}
+		} else {
+			// Upstream: normal direction
+			if m.SrcPort > 0 {
+				tcpLayer.SrcPort = layers.TCPPort(m.SrcPort)
+			}
+			if m.DstPort > 0 {
+				tcpLayer.DstPort = layers.TCPPort(m.DstPort)
+			}
 		}
 		if ip4Layer != nil {
 			tcpLayer.SetNetworkLayerForChecksum(ip4Layer)
@@ -86,16 +109,35 @@ func (m *PacketModifier) Modify(rawPacket []byte) ([]byte, error) {
 
 	// Modify UDP ports
 	if udpLayer != nil {
-		if m.SrcPort > 0 {
-			udpLayer.SrcPort = layers.UDPPort(m.SrcPort)
-		}
-		if m.DstPort > 0 {
-			udpLayer.DstPort = layers.UDPPort(m.DstPort)
+		if isDownstream {
+			// Downstream: swap src/dst port modifications
+			if m.DstPort > 0 {
+				udpLayer.SrcPort = layers.UDPPort(m.DstPort)
+			}
+			if m.SrcPort > 0 {
+				udpLayer.DstPort = layers.UDPPort(m.SrcPort)
+			}
+		} else {
+			// Upstream: normal direction
+			if m.SrcPort > 0 {
+				udpLayer.SrcPort = layers.UDPPort(m.SrcPort)
+			}
+			if m.DstPort > 0 {
+				udpLayer.DstPort = layers.UDPPort(m.DstPort)
+			}
 		}
 		if ip4Layer != nil {
 			udpLayer.SetNetworkLayerForChecksum(ip4Layer)
 		}
 	}
+
+	// Store original UDP payload before serialization (gopacket doesn't include it automatically)
+	var udpPayload []byte
+	if udpLayer != nil && len(udpLayer.Payload) > 0 {
+		udpPayload = udpLayer.Payload
+	}
+	// Don't use dnsLayer in serialization - gopacket's DNS serialization corrupts the data
+	// The DNS content is already in udpPayload
 
 	// Serialize
 	buf := gopacket.NewSerializeBuffer()
@@ -122,8 +164,12 @@ func (m *PacketModifier) Modify(rawPacket []byte) ([]byte, error) {
 			layersToSerialize = append(layersToSerialize, tcpLayer)
 		} else if udpLayer != nil {
 			layersToSerialize = append(layersToSerialize, udpLayer)
+			if len(udpPayload) > 0 {
+				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+			}
 		}
-		if payload := packet.ApplicationLayer(); payload != nil {
+		// Only add ApplicationLayer payload if not already added via udpPayload
+		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil {
 			layersToSerialize = append(layersToSerialize, gopacket.Payload(payload.Payload()))
 		}
 
@@ -140,8 +186,12 @@ func (m *PacketModifier) Modify(rawPacket []byte) ([]byte, error) {
 			layersToSerialize = append(layersToSerialize, tcpLayer)
 		} else if udpLayer != nil {
 			layersToSerialize = append(layersToSerialize, udpLayer)
+			if len(udpPayload) > 0 {
+				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+			}
 		}
-		if payload := packet.ApplicationLayer(); payload != nil {
+		// Only add ApplicationLayer payload if not already added via udpPayload
+		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil {
 			layersToSerialize = append(layersToSerialize, gopacket.Payload(payload.Payload()))
 		}
 

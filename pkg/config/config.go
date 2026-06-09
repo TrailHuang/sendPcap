@@ -43,15 +43,15 @@ func ParseMAC(s string) (net.HardwareAddr, error) {
 }
 
 // ParseIP parses an IPv4 address string
-func ParseIP(s string) net.IP {
+func ParseIP(s string) (net.IP, error) {
 	if s == "" {
-		return nil
+		return nil, nil
 	}
 	ip := net.ParseIP(s)
 	if ip == nil {
-		return nil
+		return nil, fmt.Errorf("invalid IP address %q", s)
 	}
-	return ip.To4()
+	return ip.To4(), nil
 }
 
 // IPToUint32 converts a 4-byte IP to uint32
@@ -127,35 +127,63 @@ func LoadConfig(configPath string, fs *pflag.FlagSet) (*Config, error) {
 
 	// CLI overrides
 	if v, _ := fs.GetString("src-mac"); v != "" {
-		if mac, err := ParseMAC(v); err == nil {
-			cfg.SrcMAC = mac
+		mac, err := ParseMAC(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --src-mac: %w", err)
 		}
+		cfg.SrcMAC = mac
 	}
 	if v, _ := fs.GetString("dst-mac"); v != "" {
-		if mac, err := ParseMAC(v); err == nil {
-			cfg.DstMAC = mac
+		mac, err := ParseMAC(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --dst-mac: %w", err)
 		}
+		cfg.DstMAC = mac
 	}
 	if v, _ := fs.GetInt("vlan"); v != 0 {
 		cfg.VLAN = v
 	}
 	if v, _ := fs.GetString("src-ip"); v != "" {
-		cfg.SrcIP = ParseIP(v)
+		ip, err := ParseIP(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --src-ip: %w", err)
+		}
+		cfg.SrcIP = ip
 	}
 	if v, _ := fs.GetString("dst-ip"); v != "" {
-		cfg.DstIP = ParseIP(v)
+		ip, err := ParseIP(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --dst-ip: %w", err)
+		}
+		cfg.DstIP = ip
 	}
 	if v, _ := fs.GetString("src-ip-start"); v != "" {
-		cfg.SrcIPStart = ParseIP(v)
+		ip, err := ParseIP(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --src-ip-start: %w", err)
+		}
+		cfg.SrcIPStart = ip
 	}
 	if v, _ := fs.GetString("src-ip-end"); v != "" {
-		cfg.SrcIPEnd = ParseIP(v)
+		ip, err := ParseIP(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --src-ip-end: %w", err)
+		}
+		cfg.SrcIPEnd = ip
 	}
 	if v, _ := fs.GetString("dst-ip-start"); v != "" {
-		cfg.DstIPStart = ParseIP(v)
+		ip, err := ParseIP(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --dst-ip-start: %w", err)
+		}
+		cfg.DstIPStart = ip
 	}
 	if v, _ := fs.GetString("dst-ip-end"); v != "" {
-		cfg.DstIPEnd = ParseIP(v)
+		ip, err := ParseIP(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --dst-ip-end: %w", err)
+		}
+		cfg.DstIPEnd = ip
 	}
 	if v, _ := fs.GetInt("src-port"); v != 0 {
 		cfg.SrcPort = v

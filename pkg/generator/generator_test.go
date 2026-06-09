@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"net"
 	"testing"
 
 	"sendpcap/pkg/config"
@@ -17,10 +18,18 @@ func TestGenerateCombinationsNoRange(t *testing.T) {
 	}
 }
 
+func mustParseIP(s string) net.IP {
+	ip, err := config.ParseIP(s)
+	if err != nil {
+		panic(err)
+	}
+	return ip
+}
+
 func TestGenerateCombinationsIPRange(t *testing.T) {
 	cfg := &config.Config{
-		SrcIPStart: config.ParseIP("10.0.0.1"),
-		SrcIPEnd:   config.ParseIP("10.0.0.3"),
+		SrcIPStart: mustParseIP("10.0.0.1"),
+		SrcIPEnd:   mustParseIP("10.0.0.3"),
 	}
 	combos, err := GenerateCombinations(cfg)
 	if err != nil {
@@ -59,8 +68,8 @@ func TestGenerateCombinationsPortRange(t *testing.T) {
 
 func TestGenerateCombinationsCrossProduct(t *testing.T) {
 	cfg := &config.Config{
-		SrcIPStart:   config.ParseIP("10.0.0.1"),
-		SrcIPEnd:     config.ParseIP("10.0.0.2"),
+		SrcIPStart:   mustParseIP("10.0.0.1"),
+		SrcIPEnd:     mustParseIP("10.0.0.2"),
 		DstPortStart: 80,
 		DstPortEnd:   81,
 	}
@@ -76,7 +85,7 @@ func TestGenerateCombinationsCrossProduct(t *testing.T) {
 
 func TestGenerateCombinationsSingleIP(t *testing.T) {
 	cfg := &config.Config{
-		SrcIP: config.ParseIP("10.0.0.5"),
+		SrcIP: mustParseIP("10.0.0.5"),
 	}
 	combos, err := GenerateCombinations(cfg)
 	if err != nil {

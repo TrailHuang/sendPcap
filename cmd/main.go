@@ -18,6 +18,7 @@ func main() {
 	// Register all flags on the default FlagSet
 	configPath := pflag.StringP("config", "c", "", "Config file path (YAML)")
 	quiet := pflag.BoolP("quiet", "q", false, "Quiet mode (no .osp suffix)")
+	noWait := pflag.Bool("no-wait", false, "Don't wait for file consumption, continue immediately")
 	config.RegisterFlags(pflag.CommandLine)
 	pflag.Parse()
 
@@ -72,7 +73,7 @@ func main() {
 	}
 
 	// Create processor
-	proc, err := processor.NewProcessor(targetDir, *quiet)
+	proc, err := processor.NewProcessor(targetDir, *quiet, *noWait)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating processor: %v\n", err)
 		os.Exit(1)
@@ -104,7 +105,7 @@ func main() {
 func processAll(files []string, cfg *config.Config, mod *modifier.PacketModifier, proc *processor.Processor) error {
 	for _, f := range files {
 		if err := proc.ProcessFile(f, cfg, mod); err != nil {
-			return fmt.Errorf("failed to process %s: %w", f, err)
+			fmt.Fprintf(os.Stderr, "[WARN] Skipping %s: %v\n", f, err)
 		}
 	}
 	return nil

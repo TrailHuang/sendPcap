@@ -30,7 +30,7 @@ func TestParseMACEmpty(t *testing.T) {
 }
 
 func TestIPToUint32(t *testing.T) {
-	ip := ParseIP("192.168.1.1")
+	ip, _ := ParseIP("192.168.1.1")
 	if ip == nil {
 		t.Fatal("expected valid IP")
 	}
@@ -48,9 +48,19 @@ func TestUint32ToIP(t *testing.T) {
 }
 
 func TestParseIPEmpty(t *testing.T) {
-	ip := ParseIP("")
+	ip, err := ParseIP("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if ip != nil {
 		t.Fatal("expected nil for empty IP")
+	}
+}
+
+func TestParseIPInvalid(t *testing.T) {
+	_, err := ParseIP("not_an_ip")
+	if err == nil {
+		t.Fatal("expected error for invalid IP")
 	}
 }
 
@@ -62,9 +72,11 @@ func TestConfigValidate(t *testing.T) {
 }
 
 func TestConfigValidateIPRange(t *testing.T) {
+	srcStart, _ := ParseIP("10.0.0.10")
+	srcEnd, _ := ParseIP("10.0.0.1")
 	c := &Config{
-		SrcIPStart: ParseIP("10.0.0.10"),
-		SrcIPEnd:   ParseIP("10.0.0.1"),
+		SrcIPStart: srcStart,
+		SrcIPEnd:   srcEnd,
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected error for invalid IP range")

@@ -56,8 +56,11 @@ func expandIPRange(single net.IP, start net.IP, end net.IP) []net.IP {
 		startVal := config.IPToUint32(start)
 		endVal := config.IPToUint32(end)
 		var ips []net.IP
-		for v := startVal; v <= endVal; v++ {
+		for v := startVal; ; v++ {
 			ips = append(ips, config.Uint32ToIP(v))
+			if v == endVal {
+				break
+			}
 		}
 		return ips
 	}
