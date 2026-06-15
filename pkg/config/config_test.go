@@ -92,3 +92,21 @@ func TestConfigValidatePortRange(t *testing.T) {
 		t.Fatal("expected error for invalid port range")
 	}
 }
+
+func TestConfigValidatePortUpperBound(t *testing.T) {
+	c := &Config{
+		SrcPortEnd: 70000,
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for port exceeding 65535")
+	}
+}
+
+func TestConfigValidatePortUpperBoundDst(t *testing.T) {
+	c := &Config{
+		DstPort: 65536,
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for dst_port exceeding 65535")
+	}
+}

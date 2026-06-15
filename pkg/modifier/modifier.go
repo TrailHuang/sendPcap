@@ -61,18 +61,26 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		if isDownstream {
 			// Downstream: swap src/dst modifications
 			if m.DstIP != nil {
-				ip4Layer.SrcIP = m.DstIP.To4()
+				if ip := m.DstIP.To4(); ip != nil {
+					ip4Layer.SrcIP = ip
+				}
 			}
 			if m.SrcIP != nil {
-				ip4Layer.DstIP = m.SrcIP.To4()
+				if ip := m.SrcIP.To4(); ip != nil {
+					ip4Layer.DstIP = ip
+				}
 			}
 		} else {
 			// Upstream: normal direction
 			if m.SrcIP != nil {
-				ip4Layer.SrcIP = m.SrcIP.To4()
+				if ip := m.SrcIP.To4(); ip != nil {
+					ip4Layer.SrcIP = ip
+				}
 			}
 			if m.DstIP != nil {
-				ip4Layer.DstIP = m.DstIP.To4()
+				if ip := m.DstIP.To4(); ip != nil {
+					ip4Layer.DstIP = ip
+				}
 			}
 		}
 		if m.TTL > 0 {

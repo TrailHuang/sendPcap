@@ -86,6 +86,19 @@ func (c *Config) Validate() error {
 	if c.DstPortStart > 0 && c.DstPortEnd > 0 && c.DstPortStart > c.DstPortEnd {
 		return fmt.Errorf("dst_port_start (%d) > dst_port_end (%d)", c.DstPortStart, c.DstPortEnd)
 	}
+	// Validate port upper bounds
+	for _, v := range []struct {
+		name string
+		val  int
+	}{
+		{"src_port", c.SrcPort}, {"dst_port", c.DstPort},
+		{"src_port_start", c.SrcPortStart}, {"src_port_end", c.SrcPortEnd},
+		{"dst_port_start", c.DstPortStart}, {"dst_port_end", c.DstPortEnd},
+	} {
+		if v.val > 65535 {
+			return fmt.Errorf("%s (%d) exceeds maximum port 65535", v.name, v.val)
+		}
+	}
 	return nil
 }
 

@@ -145,8 +145,13 @@ func extractFlowKey(pkt gopacket.Packet) (FlowKey, bool) {
 		return key, false
 	}
 	ipv4 := ipLayer.(*layers.IPv4)
-	key.SrcIP = ipv4.SrcIP.To4().String()
-	key.DstIP = ipv4.DstIP.To4().String()
+	srcIP := ipv4.SrcIP.To4()
+	dstIP := ipv4.DstIP.To4()
+	if srcIP == nil || dstIP == nil {
+		return key, false
+	}
+	key.SrcIP = srcIP.String()
+	key.DstIP = dstIP.String()
 	key.Protocol = uint8(ipv4.Protocol)
 
 	if tcpLayer := pkt.Layer(layers.LayerTypeTCP); tcpLayer != nil {
@@ -167,30 +172,39 @@ func extractFlowKey(pkt gopacket.Packet) (FlowKey, bool) {
 	return key, true
 }
 
-// detectFlowDirection detects the upstream direction for a flow based on the first packet
-// Returns (upstreamSrcIP, upstreamDstIP, upstreamSrcPort, upstreamDstPort, isDownstream)
-func detectFlowDirection(pkt gopacket.Packet) (string, string, uint16, uint16, bool) {
+// detectFlowDirection detects the upstream direction for a flow based on the first packet.
+// Returns (upstreamSrcIP, upstreamDstIP, upstreamSrcPort, upstreamDstPort).
+//
+// Heuristic limitations: When the first packet is not a SYN/SYN-ACK, direction is inferred
+// from port numbers (larger port → smaller port = upstream). This can be wrong when the
+// client uses a smaller port than the server, or when ports are equal.
+func detectFlowDirection(pkt gopacket.Packet) (string, string, uint16, uint16) {
 	ipLayer := pkt.Layer(layers.LayerTypeIPv4)
 	if ipLayer == nil {
-		return "", "", 0, 0, false
+		return "", "", 0, 0
 	}
 	ipv4 := ipLayer.(*layers.IPv4)
+	srcIP := ipv4.SrcIP.To4()
+	dstIP := ipv4.DstIP.To4()
+	if srcIP == nil || dstIP == nil {
+		return "", "", 0, 0
+	}
 
 	// TCP: use SYN/SYN-ACK to determine direction
 	if tcpLayer := pkt.Layer(layers.LayerTypeTCP); tcpLayer != nil {
 		tcp := tcpLayer.(*layers.TCP)
 		if tcp.SYN && !tcp.ACK {
 			// SYN packet — src is upstream
-			return ipv4.SrcIP.To4().String(), ipv4.DstIP.To4().String(), uint16(tcp.SrcPort), uint16(tcp.DstPort), false
+			return srcIP.String(), dstIP.String(), uint16(tcp.SrcPort), uint16(tcp.DstPort)
 		}
 		if tcp.SYN && tcp.ACK {
 			// SYN-ACK — src is downstream, dst is upstream
-			return ipv4.DstIP.To4().String(), ipv4.SrcIP.To4().String(), uint16(tcp.DstPort), uint16(tcp.SrcPort), false
+			return dstIP.String(), srcIP.String(), uint16(tcp.DstPort), uint16(tcp.SrcPort)
 		}
 		// Established connection — fall through to port-based detection
 	}
 
-	// Port-based: larger port → smaller port = upstream direction
+	// Port-based heuristic: larger port → smaller port = upstream direction
 	srcPort := uint16(0)
 	dstPort := uint16(0)
 
@@ -204,16 +218,16 @@ func detectFlowDirection(pkt gopacket.Packet) (string, string, uint16, uint16, b
 		dstPort = uint16(udp.DstPort)
 	} else {
 		// No ports — assume src→dst is upstream
-		return ipv4.SrcIP.To4().String(), ipv4.DstIP.To4().String(), 0, 0, false
+		return srcIP.String(), dstIP.String(), 0, 0
 	}
 
 	if srcPort >= dstPort {
 		// srcPort > dstPort: larger port → smaller port = upstream
 		// srcPort == dstPort: first packet direction = upstream
-		return ipv4.SrcIP.To4().String(), ipv4.DstIP.To4().String(), srcPort, dstPort, false
+		return srcIP.String(), dstIP.String(), srcPort, dstPort
 	}
 	// dstPort > srcPort
-	return ipv4.DstIP.To4().String(), ipv4.SrcIP.To4().String(), dstPort, srcPort, false
+	return dstIP.String(), srcIP.String(), dstPort, srcPort
 }
 
 // isDownstream checks if a packet is in the downstream direction given the upstream reference
@@ -223,11 +237,14 @@ func isDownstream(pkt gopacket.Packet, upSrcIP, upDstIP string, upSrcPort, upDst
 		return false
 	}
 	ipv4 := ipLayer.(*layers.IPv4)
-	pktSrcIP := ipv4.SrcIP.To4().String()
-	pktDstIP := ipv4.DstIP.To4().String()
+	pktSrcIP := ipv4.SrcIP.To4()
+	pktDstIP := ipv4.DstIP.To4()
+	if pktSrcIP == nil || pktDstIP == nil {
+		return false
+	}
 
-	// If this packet's src matches upstream src, it's upstream
-	if pktSrcIP == upSrcIP && pktDstIP == upDstIP {
+	// If this packet's src match upstream src, it's upstream
+	if pktSrcIP.String() == upSrcIP && pktDstIP.String() == upDstIP {
 		// Check port direction for confirmation
 		if upSrcPort > 0 && upDstPort > 0 {
 			var pktSrcPort, pktDstPort uint16
@@ -247,7 +264,7 @@ func isDownstream(pkt gopacket.Packet, upSrcIP, upDstIP string, upSrcPort, upDst
 		}
 		return false
 	}
-	return pktSrcIP == upDstIP && pktDstIP == upSrcIP
+	return pktSrcIP.String() == upDstIP && pktDstIP.String() == upSrcIP
 }
 
 // groupPacketsByFlow groups packets by their 5-tuple flow key, preserving order
@@ -273,7 +290,7 @@ func groupPacketsByFlow(packets []gopacket.Packet) []flowEntry {
 			idx = len(flows)
 			flowMap[key] = idx
 			// Detect direction from first packet
-			upSrcIP, upDstIP, upSrcPort, upDstPort, _ := detectFlowDirection(pkt)
+			upSrcIP, upDstIP, upSrcPort, upDstPort := detectFlowDirection(pkt)
 			flows = append(flows, flowEntry{
 				Key:       key,
 				UpSrcIP:   upSrcIP,
@@ -341,9 +358,12 @@ func readStandardPcapPackets(f *os.File) ([]gopacket.Packet, error) {
 	return packets, nil
 }
 
-// readPcapngPackets reads packets from a pcapng file
+// readPcapngPackets reads packets from a pcapng file.
+// Uses per-interface link types from the pcapng interface description blocks.
 func readPcapngPackets(f *os.File) ([]gopacket.Packet, error) {
-	reader, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions)
+	reader, err := pcapgo.NewNgReader(f, pcapgo.NgReaderOptions{
+		WantMixedLinkType: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -357,8 +377,12 @@ func readPcapngPackets(f *os.File) ([]gopacket.Packet, error) {
 		if err != nil {
 			return nil, err
 		}
-		_ = ci
-		packets = append(packets, gopacket.NewPacket(data, layers.LinkTypeEthernet, gopacket.Default))
+		// Determine link type from the interface that captured this packet
+		linkType := layers.LinkTypeEthernet
+		if iface, err := reader.Interface(ci.InterfaceIndex); err == nil {
+			linkType = iface.LinkType
+		}
+		packets = append(packets, gopacket.NewPacket(data, linkType, gopacket.Default))
 	}
 	return packets, nil
 }
@@ -409,6 +433,10 @@ func readNanoPcapPackets(f *os.File) ([]gopacket.Packet, error) {
 			return nil, fmt.Errorf("failed to read packet header: %w", err)
 		}
 
+		const maxPacketSize = 262144 // 256KB, sufficient for any legitimate network packet
+		if pktHeader.InclLen > maxPacketSize {
+			return nil, fmt.Errorf("packet too large: %d bytes (max %d)", pktHeader.InclLen, maxPacketSize)
+		}
 		data := make([]byte, pktHeader.InclLen)
 		if _, err := io.ReadFull(f, data); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
