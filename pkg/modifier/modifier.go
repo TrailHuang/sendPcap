@@ -139,18 +139,73 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		}
 	}
 
-	// Store original UDP payload before serialization (gopacket doesn't include it automatically)
+	// Store raw bytes after the transport layer header for explicit serialization.
+	// We use raw packet data instead of layer.Payload to avoid shared backing array
+	// issues where SerializeLayers modifies the underlying byte slice during processing.
+	// We calculate the exact payload length from IPv4.TotalLength to avoid including
+	// Ethernet minimum-frame padding (60 bytes) that gopacket may add.
 	var udpPayload []byte
-	if udpLayer != nil && len(udpLayer.Payload) > 0 {
-		udpPayload = udpLayer.Payload
+	var tcpPayload []byte
+	rawData := packet.Data()
+	// ipDataLen = actual IP packet length (excludes Ethernet padding)
+	var ipDataLen int
+	if ip4Layer != nil {
+		ipDataLen = int(ip4Layer.Length) // from IP TotalLength field
+	} else {
+		ipDataLen = len(rawData) - 14 // fallback: assume 14-byte Ethernet header
+	}
+
+	if udpLayer != nil {
+		offset := 0
+		for _, l := range packet.Layers() {
+			if l.LayerType() == layers.LayerTypeUDP {
+				offset += len(l.LayerContents()) // only header, not payload
+				break
+			}
+			offset += len(l.LayerContents())
+		}
+		// IP data starts at offset 14 (after Ethernet header)
+		ipEnd := 14 + ipDataLen
+		if offset > 0 && offset < ipEnd && ipEnd <= len(rawData) {
+			udpPayload = make([]byte, ipEnd-offset)
+			copy(udpPayload, rawData[offset:ipEnd])
+		}
 	}
 	// Don't use dnsLayer in serialization - gopacket's DNS serialization corrupts the data
 	// The DNS content is already in udpPayload
 
+	if tcpLayer != nil {
+		offset := 0
+		for _, l := range packet.Layers() {
+			if l.LayerType() == layers.LayerTypeTCP {
+				offset += len(l.LayerContents()) // only header, not payload
+				break
+			}
+			offset += len(l.LayerContents())
+		}
+		ipEnd := 14 + ipDataLen
+		if offset > 0 && offset < ipEnd && ipEnd <= len(rawData) {
+			tcpPayload = make([]byte, ipEnd-offset)
+			copy(tcpPayload, rawData[offset:ipEnd])
+		}
+	}
+
 	// Store non-TCP/UDP IP payload (OSPF, ICMP, GRE, etc.) for explicit serialization
 	var ipPayload []byte
-	if ip4Layer != nil && tcpLayer == nil && udpLayer == nil && len(ip4Layer.Payload) > 0 {
-		ipPayload = ip4Layer.Payload
+	if ip4Layer != nil && tcpLayer == nil && udpLayer == nil {
+		offset := 0
+		for _, l := range packet.Layers() {
+			if l.LayerType() == layers.LayerTypeIPv4 {
+				offset += len(l.LayerContents()) // only header, not payload
+				break
+			}
+			offset += len(l.LayerContents())
+		}
+		ipEnd := 14 + ipDataLen
+		if offset > 0 && offset < ipEnd && ipEnd <= len(rawData) {
+			ipPayload = make([]byte, ipEnd-offset)
+			copy(ipPayload, rawData[offset:ipEnd])
+		}
 	}
 
 	// Serialize
@@ -174,12 +229,17 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		if ip4Layer != nil {
 			layersToSerialize = append(layersToSerialize, ip4Layer)
 		}
-		if tcpLayer != nil {
-			layersToSerialize = append(layersToSerialize, tcpLayer)
-		} else if udpLayer != nil {
+		if udpLayer != nil {
+			// UDP takes priority over TCP in encapsulation scenarios (e.g., GTP-U)
+			// where gopacket decodes both outer UDP and inner TCP layers
 			layersToSerialize = append(layersToSerialize, udpLayer)
 			if len(udpPayload) > 0 {
 				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+			}
+		} else if tcpLayer != nil {
+			layersToSerialize = append(layersToSerialize, tcpLayer)
+			if len(tcpPayload) > 0 {
+				layersToSerialize = append(layersToSerialize, gopacket.Payload(tcpPayload))
 			}
 		} else if len(ipPayload) > 0 {
 			// Non-TCP/UDP IP protocols (OSPF, ICMP, GRE, etc.)
@@ -201,12 +261,17 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		if ip4Layer != nil {
 			layersToSerialize = append(layersToSerialize, ip4Layer)
 		}
-		if tcpLayer != nil {
-			layersToSerialize = append(layersToSerialize, tcpLayer)
-		} else if udpLayer != nil {
+		if udpLayer != nil {
+			// UDP takes priority over TCP in encapsulation scenarios (e.g., GTP-U)
+			// where gopacket decodes both outer UDP and inner TCP layers
 			layersToSerialize = append(layersToSerialize, udpLayer)
 			if len(udpPayload) > 0 {
 				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+			}
+		} else if tcpLayer != nil {
+			layersToSerialize = append(layersToSerialize, tcpLayer)
+			if len(tcpPayload) > 0 {
+				layersToSerialize = append(layersToSerialize, gopacket.Payload(tcpPayload))
 			}
 		} else if len(ipPayload) > 0 {
 			// Non-TCP/UDP IP protocols (OSPF, ICMP, GRE, etc.)
