@@ -139,6 +139,12 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 	// Don't use dnsLayer in serialization - gopacket's DNS serialization corrupts the data
 	// The DNS content is already in udpPayload
 
+	// Store non-TCP/UDP IP payload (OSPF, ICMP, GRE, etc.) for explicit serialization
+	var ipPayload []byte
+	if ip4Layer != nil && tcpLayer == nil && udpLayer == nil && len(ip4Layer.Payload) > 0 {
+		ipPayload = ip4Layer.Payload
+	}
+
 	// Serialize
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
@@ -167,9 +173,14 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 			if len(udpPayload) > 0 {
 				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
 			}
+		} else if len(ipPayload) > 0 {
+			// Non-TCP/UDP IP protocols (OSPF, ICMP, GRE, etc.)
+			// The IP payload must be serialized explicitly so that gopacket's
+			// reverse-order PrependBytes includes it when computing IPv4 TotalLength.
+			layersToSerialize = append(layersToSerialize, gopacket.Payload(ipPayload))
 		}
-		// Only add ApplicationLayer payload if not already added via udpPayload
-		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil {
+		// Only add ApplicationLayer payload if not already added via explicit payload
+		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil && tcpLayer == nil && len(ipPayload) == 0 {
 			layersToSerialize = append(layersToSerialize, gopacket.Payload(payload.Payload()))
 		}
 
@@ -189,9 +200,14 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 			if len(udpPayload) > 0 {
 				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
 			}
+		} else if len(ipPayload) > 0 {
+			// Non-TCP/UDP IP protocols (OSPF, ICMP, GRE, etc.)
+			// The IP payload must be serialized explicitly so that gopacket's
+			// reverse-order PrependBytes includes it when computing IPv4 TotalLength.
+			layersToSerialize = append(layersToSerialize, gopacket.Payload(ipPayload))
 		}
-		// Only add ApplicationLayer payload if not already added via udpPayload
-		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil {
+		// Only add ApplicationLayer payload if not already added via explicit payload
+		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil && tcpLayer == nil && len(ipPayload) == 0 {
 			layersToSerialize = append(layersToSerialize, gopacket.Payload(payload.Payload()))
 		}
 
