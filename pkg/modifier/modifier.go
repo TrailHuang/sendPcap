@@ -26,6 +26,7 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 
 	// Extract layers
 	var ethLayer *layers.Ethernet
+	var vlanLayer *layers.Dot1Q
 	var ip4Layer *layers.IPv4
 	var tcpLayer *layers.TCP
 	var udpLayer *layers.UDP
@@ -33,6 +34,9 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 
 	if l := packet.Layer(layers.LayerTypeEthernet); l != nil {
 		ethLayer = l.(*layers.Ethernet)
+	}
+	if l := packet.Layer(layers.LayerTypeDot1Q); l != nil {
+		vlanLayer = l.(*layers.Dot1Q)
 	}
 	if l := packet.Layer(layers.LayerTypeIPv4); l != nil {
 		ip4Layer = l.(*layers.IPv4)
@@ -54,6 +58,17 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 	}
 	if m.DstMAC != nil {
 		ethLayer.DstMAC = m.DstMAC
+	}
+
+	// Modify VLAN
+	if m.VLAN > 0 {
+		if vlanLayer != nil {
+			// Packet already has VLAN, modify it
+			vlanLayer.VLANIdentifier = uint16(m.VLAN)
+		} else {
+			// Packet doesn't have VLAN, will add it during serialization
+			// (handled in serialization section below)
+		}
 	}
 
 	// Modify IP layer
@@ -155,6 +170,13 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		ipDataLen = len(rawData) - 14 // fallback: assume 14-byte Ethernet header
 	}
 
+	// Calculate the offset where IP data starts in the raw packet
+	// Ethernet header: 14 bytes, VLAN tag: 4 bytes (if present)
+	ipStart := 14
+	if vlanLayer != nil {
+		ipStart += 4
+	}
+
 	if udpLayer != nil {
 		offset := 0
 		for _, l := range packet.Layers() {
@@ -164,8 +186,7 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 			}
 			offset += len(l.LayerContents())
 		}
-		// IP data starts at offset 14 (after Ethernet header)
-		ipEnd := 14 + ipDataLen
+		ipEnd := ipStart + ipDataLen
 		if offset > 0 && offset < ipEnd && ipEnd <= len(rawData) {
 			udpPayload = make([]byte, ipEnd-offset)
 			copy(udpPayload, rawData[offset:ipEnd])
@@ -183,7 +204,7 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 			}
 			offset += len(l.LayerContents())
 		}
-		ipEnd := 14 + ipDataLen
+		ipEnd := ipStart + ipDataLen
 		if offset > 0 && offset < ipEnd && ipEnd <= len(rawData) {
 			tcpPayload = make([]byte, ipEnd-offset)
 			copy(tcpPayload, rawData[offset:ipEnd])
@@ -201,7 +222,7 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 			}
 			offset += len(l.LayerContents())
 		}
-		ipEnd := 14 + ipDataLen
+		ipEnd := ipStart + ipDataLen
 		if offset > 0 && offset < ipEnd && ipEnd <= len(rawData) {
 			ipPayload = make([]byte, ipEnd-offset)
 			copy(ipPayload, rawData[offset:ipEnd])
@@ -215,55 +236,81 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		ComputeChecksums: true,
 	}
 
-	// Handle VLAN insertion
+	// Handle VLAN insertion or modification
 	if m.VLAN > 0 {
-		vlan := &layers.Dot1Q{
-			Priority:       0,
-			DropEligible:   false,
-			VLANIdentifier: uint16(m.VLAN),
-			Type:           ethLayer.EthernetType,
-		}
-		ethLayer.EthernetType = layers.EthernetTypeDot1Q
-
-		layersToSerialize := []gopacket.SerializableLayer{ethLayer, vlan}
-		if ip4Layer != nil {
-			layersToSerialize = append(layersToSerialize, ip4Layer)
-		}
-		if udpLayer != nil {
-			// UDP takes priority over TCP in encapsulation scenarios (e.g., GTP-U)
-			// where gopacket decodes both outer UDP and inner TCP layers
-			layersToSerialize = append(layersToSerialize, udpLayer)
-			if len(udpPayload) > 0 {
-				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+		if vlanLayer != nil {
+			// Packet already has VLAN, we modified it above
+			// Keep the existing VLAN layer in serialization
+			layersToSerialize := []gopacket.SerializableLayer{ethLayer, vlanLayer}
+			if ip4Layer != nil {
+				layersToSerialize = append(layersToSerialize, ip4Layer)
 			}
-		} else if tcpLayer != nil {
-			layersToSerialize = append(layersToSerialize, tcpLayer)
-			if len(tcpPayload) > 0 {
-				layersToSerialize = append(layersToSerialize, gopacket.Payload(tcpPayload))
+			if udpLayer != nil {
+				layersToSerialize = append(layersToSerialize, udpLayer)
+				if len(udpPayload) > 0 {
+					layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+				}
+			} else if tcpLayer != nil {
+				layersToSerialize = append(layersToSerialize, tcpLayer)
+				if len(tcpPayload) > 0 {
+					layersToSerialize = append(layersToSerialize, gopacket.Payload(tcpPayload))
+				}
+			} else if len(ipPayload) > 0 {
+				layersToSerialize = append(layersToSerialize, gopacket.Payload(ipPayload))
 			}
-		} else if len(ipPayload) > 0 {
-			// Non-TCP/UDP IP protocols (OSPF, ICMP, GRE, etc.)
-			// The IP payload must be serialized explicitly so that gopacket's
-			// reverse-order PrependBytes includes it when computing IPv4 TotalLength.
-			layersToSerialize = append(layersToSerialize, gopacket.Payload(ipPayload))
-		}
-		// Only add ApplicationLayer payload if not already added via explicit payload
-		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil && tcpLayer == nil && len(ipPayload) == 0 {
-			layersToSerialize = append(layersToSerialize, gopacket.Payload(payload.Payload()))
-		}
+			if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil && tcpLayer == nil && len(ipPayload) == 0 {
+				layersToSerialize = append(layersToSerialize, gopacket.Payload(payload.Payload()))
+			}
 
-		if err := gopacket.SerializeLayers(buf, opts, layersToSerialize...); err != nil {
-			return nil, err
+			if err := gopacket.SerializeLayers(buf, opts, layersToSerialize...); err != nil {
+				return nil, err
+			}
+		} else {
+			// Packet doesn't have VLAN, add new one
+			vlan := &layers.Dot1Q{
+				Priority:       0,
+				DropEligible:   false,
+				VLANIdentifier: uint16(m.VLAN),
+				Type:           ethLayer.EthernetType,
+			}
+			ethLayer.EthernetType = layers.EthernetTypeDot1Q
+
+			layersToSerialize := []gopacket.SerializableLayer{ethLayer, vlan}
+			if ip4Layer != nil {
+				layersToSerialize = append(layersToSerialize, ip4Layer)
+			}
+			if udpLayer != nil {
+				layersToSerialize = append(layersToSerialize, udpLayer)
+				if len(udpPayload) > 0 {
+					layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+				}
+			} else if tcpLayer != nil {
+				layersToSerialize = append(layersToSerialize, tcpLayer)
+				if len(tcpPayload) > 0 {
+					layersToSerialize = append(layersToSerialize, gopacket.Payload(tcpPayload))
+				}
+			} else if len(ipPayload) > 0 {
+				layersToSerialize = append(layersToSerialize, gopacket.Payload(ipPayload))
+			}
+			if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil && tcpLayer == nil && len(ipPayload) == 0 {
+				layersToSerialize = append(layersToSerialize, gopacket.Payload(payload.Payload()))
+			}
+
+			if err := gopacket.SerializeLayers(buf, opts, layersToSerialize...); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		var layersToSerialize []gopacket.SerializableLayer
 		layersToSerialize = append(layersToSerialize, ethLayer)
+		if vlanLayer != nil {
+			// Keep existing VLAN if present and we're not modifying VLAN
+			layersToSerialize = append(layersToSerialize, vlanLayer)
+		}
 		if ip4Layer != nil {
 			layersToSerialize = append(layersToSerialize, ip4Layer)
 		}
 		if udpLayer != nil {
-			// UDP takes priority over TCP in encapsulation scenarios (e.g., GTP-U)
-			// where gopacket decodes both outer UDP and inner TCP layers
 			layersToSerialize = append(layersToSerialize, udpLayer)
 			if len(udpPayload) > 0 {
 				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
@@ -274,12 +321,8 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 				layersToSerialize = append(layersToSerialize, gopacket.Payload(tcpPayload))
 			}
 		} else if len(ipPayload) > 0 {
-			// Non-TCP/UDP IP protocols (OSPF, ICMP, GRE, etc.)
-			// The IP payload must be serialized explicitly so that gopacket's
-			// reverse-order PrependBytes includes it when computing IPv4 TotalLength.
 			layersToSerialize = append(layersToSerialize, gopacket.Payload(ipPayload))
 		}
-		// Only add ApplicationLayer payload if not already added via explicit payload
 		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil && tcpLayer == nil && len(ipPayload) == 0 {
 			layersToSerialize = append(layersToSerialize, gopacket.Payload(payload.Payload()))
 		}
