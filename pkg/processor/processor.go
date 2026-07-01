@@ -75,7 +75,9 @@ func (p *Processor) Cleanup() error {
 	return os.RemoveAll(p.TempDir)
 }
 
-// ProcessFile processes a single pcap file through all combinations, grouped by flow
+// ProcessFile processes a single pcap file through all combinations
+// When cfg.SplitByFlow is true, packets are grouped by flow and each flow generates a separate file.
+// When cfg.SplitByFlow is false, all packets are kept in original order in a single file per combination.
 func (p *Processor) ProcessFile(srcPath string, cfg *config.Config, mod *modifier.PacketModifier) error {
 	packets, err := readAllPackets(srcPath)
 	if err != nil {
@@ -87,7 +89,14 @@ func (p *Processor) ProcessFile(srcPath string, cfg *config.Config, mod *modifie
 		return fmt.Errorf("failed to generate combinations: %w", err)
 	}
 
-	// Group packets by flow (5-tuple)
+	if cfg.SplitByFlow {
+		return p.processByFlow(srcPath, packets, combos, mod)
+	}
+	return p.processInOrder(srcPath, packets, combos, mod)
+}
+
+// processByFlow groups packets by flow and writes one file per flow per combination
+func (p *Processor) processByFlow(srcPath string, packets []gopacket.Packet, combos []generator.Combination, mod *modifier.PacketModifier) error {
 	flows := groupPacketsByFlow(packets)
 	baseName := filepath.Base(srcPath)
 	totalFiles := len(flows) * len(combos)
@@ -95,22 +104,10 @@ func (p *Processor) ProcessFile(srcPath string, cfg *config.Config, mod *modifie
 
 	for flowIdx, flow := range flows {
 		for comboIdx, combo := range combos {
-			comboMod := *mod
-			if combo.SrcIP != nil {
-				comboMod.SrcIP = combo.SrcIP
-			}
-			if combo.DstIP != nil {
-				comboMod.DstIP = combo.DstIP
-			}
-			if combo.SrcPort > 0 {
-				comboMod.SrcPort = combo.SrcPort
-			}
-			if combo.DstPort > 0 {
-				comboMod.DstPort = combo.DstPort
-			}
+			comboMod := buildComboMod(mod, combo)
 
 			tempFile := filepath.Join(p.TempDir, fmt.Sprintf("%s_flow_%d_combo_%d.pcap", baseName, flowIdx, comboIdx))
-			if err := writePackets(tempFile, flow.Packets, &comboMod, flow.UpSrcIP, flow.UpDstIP, flow.UpSrcPort, flow.UpDstPort); err != nil {
+			if err := writePackets(tempFile, flow.Packets, comboMod, flow.UpSrcIP, flow.UpDstIP, flow.UpSrcPort, flow.UpDstPort); err != nil {
 				return fmt.Errorf("failed to write flow %d combo %d: %w", flowIdx, comboIdx, err)
 			}
 
@@ -134,6 +131,58 @@ func (p *Processor) ProcessFile(srcPath string, cfg *config.Config, mod *modifie
 	}
 
 	return nil
+}
+
+// processInOrder keeps packets in original order and writes one file per combination
+func (p *Processor) processInOrder(srcPath string, packets []gopacket.Packet, combos []generator.Combination, mod *modifier.PacketModifier) error {
+	baseName := filepath.Base(srcPath)
+	totalFiles := len(combos)
+
+	for comboIdx, combo := range combos {
+		comboMod := buildComboMod(mod, combo)
+
+		tempFile := filepath.Join(p.TempDir, fmt.Sprintf("%s_combo_%d.pcap", baseName, comboIdx))
+		// Use empty direction info — packets are processed as-is
+		if err := writePackets(tempFile, packets, comboMod, "", "", 0, 0); err != nil {
+			return fmt.Errorf("failed to write combo %d: %w", comboIdx, err)
+		}
+
+		var targetFile string
+		if p.Quiet {
+			targetFile = filepath.Join(p.TargetDir, fmt.Sprintf("%s_combo_%d.pcap", baseName, comboIdx))
+		} else {
+			targetFile = filepath.Join(p.TargetDir, fmt.Sprintf("%s_combo_%d.pcap.osp", baseName, comboIdx))
+		}
+
+		if err := copyFile(tempFile, targetFile); err != nil {
+			return fmt.Errorf("failed to copy combo %d: %w", comboIdx, err)
+		}
+
+		fmt.Printf("[INFO] %d/%d Combo %d: %s >> %s\n", comboIdx+1, totalFiles, comboIdx, baseName, targetFile)
+		if !p.NoWait {
+			waitForFileGone(targetFile)
+		}
+	}
+
+	return nil
+}
+
+// buildComboMod creates a copy of mod with combination overrides applied
+func buildComboMod(mod *modifier.PacketModifier, combo generator.Combination) *modifier.PacketModifier {
+	comboMod := *mod
+	if combo.SrcIP != nil {
+		comboMod.SrcIP = combo.SrcIP
+	}
+	if combo.DstIP != nil {
+		comboMod.DstIP = combo.DstIP
+	}
+	if combo.SrcPort > 0 {
+		comboMod.SrcPort = combo.SrcPort
+	}
+	if combo.DstPort > 0 {
+		comboMod.DstPort = combo.DstPort
+	}
+	return &comboMod
 }
 
 // extractFlowKey extracts the 5-tuple flow key from a packet

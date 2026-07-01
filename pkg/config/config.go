@@ -28,6 +28,7 @@ type Config struct {
 	DstPortEnd   int              `yaml:"dst_port_end"`
 	TTL          int              `yaml:"ttl"`
 	Protocol     int              `yaml:"protocol"`
+	SplitByFlow  bool             `yaml:"split_by_flow"` // 是否按flow拆分pcap，默认为true
 }
 
 // ParseMAC parses a MAC address string
@@ -121,11 +122,14 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Int("dst-port-end", 0, "Destination port end")
 	fs.Int("ttl", 0, "TTL")
 	fs.Int("protocol", 0, "IP protocol number")
+	fs.Bool("split-by-flow", true, "Split pcap by flow (default: true)")
 }
 
 // LoadConfig loads config from YAML file and applies CLI overrides
 func LoadConfig(configPath string, fs *pflag.FlagSet) (*Config, error) {
-	cfg := &Config{}
+	cfg := &Config{
+		SplitByFlow: true, // 默认开启按flow拆分
+	}
 
 	// Load from YAML file if provided
 	if configPath != "" {
@@ -221,6 +225,12 @@ func LoadConfig(configPath string, fs *pflag.FlagSet) (*Config, error) {
 	}
 	if v, _ := fs.GetInt("protocol"); v != 0 {
 		cfg.Protocol = v
+	}
+	// 处理split-by-flow参数
+	if fs.Changed("split-by-flow") {
+		if v, _ := fs.GetBool("split-by-flow"); !v {
+			cfg.SplitByFlow = false
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {

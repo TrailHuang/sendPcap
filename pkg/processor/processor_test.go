@@ -135,7 +135,7 @@ func TestProcessFileFlowBased(t *testing.T) {
 	defer proc.Cleanup()
 
 	// Config with no IP/port overrides → 1 combo (default)
-	cfg := &config.Config{}
+	cfg := &config.Config{SplitByFlow: true}
 	mod := &modifier.PacketModifier{}
 
 	if err := proc.ProcessFile(inputFile, cfg, mod); err != nil {
@@ -180,8 +180,9 @@ func TestProcessFileFlowXCombo(t *testing.T) {
 
 	// Config with 2 src IPs → 2 combos
 	cfg := &config.Config{
-		SrcIPStart: net.ParseIP("172.16.0.1").To4(),
-		SrcIPEnd:   net.ParseIP("172.16.0.2").To4(),
+		SrcIPStart:  net.ParseIP("172.16.0.1").To4(),
+		SrcIPEnd:    net.ParseIP("172.16.0.2").To4(),
+		SplitByFlow: true,
 	}
 	mod := &modifier.PacketModifier{}
 
