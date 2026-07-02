@@ -28,6 +28,7 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 	var ethLayer *layers.Ethernet
 	var vlanLayer *layers.Dot1Q
 	var ip4Layer *layers.IPv4
+	var ip6Layer *layers.IPv6
 	var tcpLayer *layers.TCP
 	var udpLayer *layers.UDP
 	// dnsLayer is not used in serialization - gopacket's DNS serialization corrupts the data
@@ -41,6 +42,9 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 	if l := packet.Layer(layers.LayerTypeIPv4); l != nil {
 		ip4Layer = l.(*layers.IPv4)
 	}
+	if l := packet.Layer(layers.LayerTypeIPv6); l != nil {
+		ip6Layer = l.(*layers.IPv6)
+	}
 	if l := packet.Layer(layers.LayerTypeTCP); l != nil {
 		tcpLayer = l.(*layers.TCP)
 	}
@@ -50,6 +54,11 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 
 	if ethLayer == nil {
 		return nil, nil // skip non-ethernet packets
+	}
+
+	// Skip IPv6 packets - not supported
+	if ip6Layer != nil && ip4Layer == nil {
+		return nil, nil
 	}
 
 	// Modify MAC addresses
@@ -106,8 +115,13 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		}
 	}
 
+	// Check for TCP/UDP without IPv4 - cannot compute checksum, skip this packet
+	if (tcpLayer != nil || udpLayer != nil) && ip4Layer == nil {
+		return nil, nil // skip packet
+	}
+
 	// Modify TCP ports
-	if tcpLayer != nil {
+	if tcpLayer != nil && ip4Layer != nil {
 		if isDownstream {
 			// Downstream: swap src/dst port modifications
 			if m.DstPort > 0 {
@@ -125,13 +139,11 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 				tcpLayer.DstPort = layers.TCPPort(m.DstPort)
 			}
 		}
-		if ip4Layer != nil {
-			tcpLayer.SetNetworkLayerForChecksum(ip4Layer)
-		}
+		tcpLayer.SetNetworkLayerForChecksum(ip4Layer)
 	}
 
 	// Modify UDP ports
-	if udpLayer != nil {
+	if udpLayer != nil && ip4Layer != nil {
 		if isDownstream {
 			// Downstream: swap src/dst port modifications
 			if m.DstPort > 0 {
@@ -149,9 +161,7 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 				udpLayer.DstPort = layers.UDPPort(m.DstPort)
 			}
 		}
-		if ip4Layer != nil {
-			udpLayer.SetNetworkLayerForChecksum(ip4Layer)
-		}
+		udpLayer.SetNetworkLayerForChecksum(ip4Layer)
 	}
 
 	// Store raw bytes after the transport layer header for explicit serialization.
@@ -236,6 +246,11 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		ComputeChecksums: true,
 	}
 
+	// Safety check: if we have TCP/UDP but no IPv4, skip this packet
+	if (tcpLayer != nil || udpLayer != nil) && ip4Layer == nil {
+		return nil, nil
+	}
+
 	// Handle VLAN insertion or modification
 	if m.VLAN > 0 {
 		if vlanLayer != nil {
@@ -310,17 +325,21 @@ func (m *PacketModifier) Modify(rawPacket []byte, isDownstream bool) ([]byte, er
 		if ip4Layer != nil {
 			layersToSerialize = append(layersToSerialize, ip4Layer)
 		}
-		if udpLayer != nil {
-			layersToSerialize = append(layersToSerialize, udpLayer)
-			if len(udpPayload) > 0 {
-				layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+		// Only add TCP/UDP if we have IPv4
+		if ip4Layer != nil {
+			if udpLayer != nil {
+				layersToSerialize = append(layersToSerialize, udpLayer)
+				if len(udpPayload) > 0 {
+					layersToSerialize = append(layersToSerialize, gopacket.Payload(udpPayload))
+				}
+			} else if tcpLayer != nil {
+				layersToSerialize = append(layersToSerialize, tcpLayer)
+				if len(tcpPayload) > 0 {
+					layersToSerialize = append(layersToSerialize, gopacket.Payload(tcpPayload))
+				}
 			}
-		} else if tcpLayer != nil {
-			layersToSerialize = append(layersToSerialize, tcpLayer)
-			if len(tcpPayload) > 0 {
-				layersToSerialize = append(layersToSerialize, gopacket.Payload(tcpPayload))
-			}
-		} else if len(ipPayload) > 0 {
+		}
+		if len(ipPayload) > 0 {
 			layersToSerialize = append(layersToSerialize, gopacket.Payload(ipPayload))
 		}
 		if payload := packet.ApplicationLayer(); payload != nil && udpLayer == nil && tcpLayer == nil && len(ipPayload) == 0 {
